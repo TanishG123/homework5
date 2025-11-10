@@ -1,6 +1,8 @@
 import abc
 
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
 
 def load() -> torch.nn.Module:
@@ -105,6 +107,7 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
           However, later parts of the assignment require both non-linearities (i.e. GeLU) and
           interactions (i.e. convolutions) between patches.
     """
+    
 
     class PatchEncoder(torch.nn.Module):
         """
@@ -113,23 +116,55 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
         """
 
         def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
+            # code help from ChatGPT
             super().__init__()
-            raise NotImplementedError()
+            self.patch = PatchifyLinear(patch_size=patch_size, latent_dim=latent_dim)
+            # operate convs in CHW space
+            self.block = nn.Sequential(
+                nn.Conv2d(latent_dim, latent_dim, kernel_size=3, padding=1, bias=False),
+                nn.GELU(),
+                nn.Conv2d(latent_dim, bottleneck, kernel_size=1, bias=True),
+            )
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            raise NotImplementedError()
+            # code help from ChatGPT
+            # x: (B,H,W,3) -> (B,h,w,latent_dim)
+            z = self.patch(x)                              # channel-last
+            z = hwc_to_chw(z)                              # (B,C,h,w)
+            z = self.block(z)                              # (B,bottleneck,h,w)
+            z = chw_to_hwc(z)                              # (B,h,w,bottleneck)
+            return z
 
     class PatchDecoder(torch.nn.Module):
         def __init__(self, patch_size: int, latent_dim: int, bottleneck: int):
+            # code help from ChatGPT
             super().__init__()
-            raise NotImplementedError()
+            self.pre = nn.Sequential(
+                nn.Conv2d(bottleneck, latent_dim, kernel_size=3, padding=1, bias=False),
+                nn.GELU(),
+                nn.Conv2d(latent_dim, latent_dim, kernel_size=1, bias=True),
+            )
+            self.unpatch = UnpatchifyLinear(patch_size=patch_size, latent_dim=latent_dim)
 
         def forward(self, x: torch.Tensor) -> torch.Tensor:
-            raise NotImplementedError()
+          # code help from ChatGPT
+          # x: (B,h,w,bottleneck)
+          y = hwc_to_chw(x)                              # (B,bottleneck,h,w)
+          y = self.pre(y)                                # (B,latent_dim,h,w)
+          y = chw_to_hwc(y)                              # (B,h,w,latent_dim)
+          y = self.unpatch(y)                            # (B,H,W,3)
+          # Optional: bound to [-0.5, 0.5] range used by the trainer; let MSE handle it
+          return y
 
     def __init__(self, patch_size: int = 25, latent_dim: int = 128, bottleneck: int = 128):
+        # code help from ChatGPT
         super().__init__()
-        raise NotImplementedError()
+        self.patch_size = patch_size
+        self.latent_dim = latent_dim
+        self.bottleneck = bottleneck
+
+        self.encoder = self.PatchEncoder(patch_size, latent_dim, bottleneck)
+        self.decoder = self.PatchDecoder(patch_size, latent_dim, bottleneck)
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
@@ -137,10 +172,13 @@ class PatchAutoEncoder(torch.nn.Module, PatchAutoEncoderBase):
         minimize (or even just visualize).
         You can return an empty dictionary if you don't have any additional terms.
         """
-        raise NotImplementedError()
+        # code help from ChatGPT
+        z = self.encode(x)           # (B,h,w,bottleneck)
+        x_hat = self.decode(z)       # (B,H,W,3)
+        return x_hat, {}
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        return self.encoder(x)
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        return self.decoder(x)
