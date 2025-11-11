@@ -63,11 +63,11 @@ def train(model_name_or_path: str, epochs: int = 5, batch_size: int = 64):
 
         def train_dataloader(self):
             dataset = ImageDataset("train")
-            return torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=True)
+            return torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
 
         def val_dataloader(self):
             dataset = ImageDataset("valid")
-            return torch.utils.data.DataLoader(dataset, batch_size=4096, num_workers=4, shuffle=True)
+            return torch.utils.data.DataLoader(dataset, batch_size=4096, num_workers=2, shuffle=False)
 
     class AutoregressiveTrainer(L.LightningModule):
         def __init__(self, model):
@@ -104,11 +104,11 @@ def train(model_name_or_path: str, epochs: int = 5, batch_size: int = 64):
 
         def train_dataloader(self):
             dataset = TokenDataset("train")
-            return torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=True)
+            return torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=True)
 
         def val_dataloader(self):
             dataset = TokenDataset("valid")
-            return torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=4, shuffle=True)
+            return torch.utils.data.DataLoader(dataset, batch_size=batch_size, num_workers=2, shuffle=False)
 
     class CheckPointer(L.Callback):
         def on_train_epoch_end(self, trainer, pl_module):

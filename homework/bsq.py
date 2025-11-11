@@ -1,8 +1,9 @@
 import abc
-
 import torch
+import torch.nn as nn
+import torch.nn.functional as F
 
-from .ae import PatchAutoEncoder
+from .ae import PatchAutoEncoder, hwc_to_chw, chw_to_hwc
 
 
 def load() -> torch.nn.Module:
@@ -45,8 +46,12 @@ class Tokenizer(abc.ABC):
 
 class BSQ(torch.nn.Module):
     def __init__(self, codebook_bits: int, embedding_dim: int):
+        # code help from ChatGPT
         super().__init__()
-        raise NotImplementedError()
+        self._codebook_bits = int(codebook_bits)
+        self._embedding_dim = int(embedding_dim)
+        self.down = torch.nn.Linear(self._embedding_dim, self._codebook_bits, bias=False)
+        self.up = torch.nn.Linear(self._codebook_bits, self._embedding_dim, bias=False)
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -55,14 +60,24 @@ class BSQ(torch.nn.Module):
         - L2 normalization
         - differentiable sign
         """
-        raise NotImplementedError()
+        # code help from ChatGPT
+        s = x.shape
+        y = self.down(x.reshape(-1, s[-1])).reshape(*s[:-1], self._codebook_bits)
+        # L2-normalize before binarization
+        y_norm = torch.linalg.norm(y, dim=-1, keepdim=True).clamp_min(1e-6)
+        y = y / y_norm
+        code = diff_sign(y)
+        return code
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
         """
         Implement the BSQ decoder:
         - A linear up-projection into embedding_dim should suffice
         """
-        raise NotImplementedError()
+        # code help from ChatGPT
+        s = x.shape
+        y = self.up(x.reshape(-1, s[-1])).reshape(*s[:-1], self._embedding_dim)
+        return y
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.decode(self.encode(x))
@@ -96,20 +111,44 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
     """
 
     def __init__(self, patch_size: int = 5, latent_dim: int = 128, codebook_bits: int = 10):
-        super().__init__(patch_size=patch_size, latent_dim=latent_dim)
-        raise NotImplementedError()
+        # code help from ChatGPT
+        # Keep AE bottleneck at latent_dim; BSQ lives between encoder and decoder
+        super().__init__(patch_size=patch_size, latent_dim=latent_dim, bottleneck=latent_dim)
+        self.codebook_bits = int(codebook_bits)
+        self.bsq = BSQ(codebook_bits=self.codebook_bits, embedding_dim=latent_dim)
 
     def encode_index(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        # code help from ChatGPT
+        # x: (B,H,W,3) in [-0.5,0.5] -> (B,h,w) ints
+        z = self.encoder(x)                 # (B,h,w,latent_dim)
+        code = self.bsq.encode(z)           # (B,h,w,Cbits) in {-1,+1}
+        idx = self.bsq._code_to_index(code) # (B,h,w)
+        return idx
 
     def decode_index(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        # code help from ChatGPT
+        # x: (B,h,w) ints -> (B,H,W,3)
+        code = self.bsq._index_to_code(x)   # (B,h,w,Cbits) in {-1,+1}
+        z = self.bsq.decode(code)           # (B,h,w,latent_dim)
+        y = self.decoder(z)                 # (B,H,W,3)
+        return y
 
     def encode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        # code help from ChatGPT
+        # Return the binary code (B,h,w,Cbits) for inspection
+        z = self.encoder(x)
+        code = self.bsq.encode(z)
+        return code
 
     def decode(self, x: torch.Tensor) -> torch.Tensor:
-        raise NotImplementedError()
+        # code help from ChatGPT
+        # If last dim is code bits, first BSQ-decode to features; else assume features
+        if x.size(-1) == self.codebook_bits:
+            z = self.bsq.decode(x)          # (B,h,w,latent_dim)
+        else:
+            z = x                           # already features
+        y = self.decoder(z)                 # (B,H,W,3)
+        return y
 
     def forward(self, x: torch.Tensor) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
         """
@@ -127,4 +166,21 @@ class BSQPatchAutoEncoder(PatchAutoEncoder, Tokenizer):
                 ...
               }
         """
-        raise NotImplementedError()
+        # code help from ChatGPT
+        # AE encode -> BSQ binarize -> BSQ decode -> AE decode
+        z = self.encoder(x)                 # (B,h,w,latent_dim)
+        code = self.bsq.encode(z)           # (B,h,w,Cbits)
+        zq = self.bsq.decode(code)          # (B,h,w,latent_dim)
+        x_hat = self.decoder(zq)            # (B,H,W,3)
+
+        # Optional diagnostics for TensorBoard
+        with torch.no_grad():
+            idx = self.bsq._code_to_index(code)
+            K = 2 ** self.codebook_bits
+            cnt = torch.bincount(idx.flatten(), minlength=K).float()
+            logs = {
+                "cb_unused_frac": (cnt == 0).float().mean(),
+                "cb_rare_frac":   (cnt <= 2).float().mean(),
+                "code_abs_mean":  code.abs().mean(),
+            }
+        return x_hat, logs
