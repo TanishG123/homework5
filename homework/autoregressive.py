@@ -118,19 +118,21 @@ class AutoregressiveModel(torch.nn.Module, Autoregressive):
         # code help from ChatGPT
         if device is None:
             device = next(self.parameters()).device
-
         L = h * w
-        # initialize sequence with zeros (any valid token id is fine)
         seq = torch.zeros(B, L, dtype=torch.long, device=device)
 
-        # generate left-to-right
+        temperature = 1.0   # try 0.9–1.1
+        top_k = 64          # 32–128 helps reduce dupes
+
         for t in range(L):
-            # forward expects (B,h,w) -> supply the current seq as a grid
-            logits, _ = self.forward(seq.view(B, h, w))
-            # grab logits for position t
-            step_logits = logits.view(B, L, self.n_tokens)[:, t, :]  # (B, n_tokens)
-            # greedy pick
-            next_tok = step_logits.argmax(dim=-1)                    # (B,)
-            seq[:, t] = next_tok
+            logits, _ = self.forward(seq.view(B, h, w))            # (B,h,w,V)
+            step = logits.view(B, L, self.n_tokens)[:, t, :] / max(temperature, 1e-6)
+
+            if 0 < top_k < self.n_tokens:
+                vals, idxs = step.topk(top_k, dim=-1)
+                step = torch.full_like(step, float("-inf")).scatter(-1, idxs, vals)
+
+            probs = step.softmax(-1)
+            seq[:, t] = torch.multinomial(probs, 1).squeeze(-1)    # stochastic draw
 
         return seq.view(B, h, w)
